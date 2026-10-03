@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+bmi_records.db
+.env
