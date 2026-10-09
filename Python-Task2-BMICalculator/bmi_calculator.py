@@ -1,24 +1,42 @@
+
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import sqlite3
+import csv
+import math
+from pathlib import Path
 from datetime import datetime
-import matplotlib.pyplot as plt
+
+# =====================================================
+# CONFIGURATION
+# =====================================================
+
+DB_PATH = Path(__file__).resolve().parent / "bmi_records.db"
+
+BG = "#F4F1FF"
+CARD = "#FFFFFF"
+PURPLE = "#7354E8"
+PURPLE_DARK = "#5C3FD1"
+TEXT = "#292642"
+MUTED = "#89869F"
+BORDER = "#E8E3F6"
+
+CATEGORY_COLORS = {
+    "Underweight": "#4285D4",
+    "Normal": "#24A879",
+    "Overweight": "#E9A23B",
+    "Obese": "#E65B70",
+}
 
 
-# =========================
+# =====================================================
 # DATABASE
-# =========================
-
-DB_NAME = "bmi_records.db"
-
+# =====================================================
 
 def create_database():
-    """Create the BMI records table if it does not exist."""
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-
-        cursor.execute("""
+    """Create the database table if it does not exist."""
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS bmi_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_name TEXT NOT NULL,
@@ -30,245 +48,343 @@ def create_database():
             )
         """)
 
-        conn.commit()
-        conn.close()
 
+def get_records(user_name=None):
+    """Get saved records, newest first."""
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+
+        if user_name:
+            rows = conn.execute("""
+                SELECT id, user_name, weight, height,
+                       bmi, category, recorded_at
+                FROM bmi_records
+                WHERE user_name = ?
+                ORDER BY id DESC
+            """, (user_name,)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT id, user_name, weight, height,
+                       bmi, category, recorded_at
+                FROM bmi_records
+                ORDER BY id DESC
+            """).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+# =====================================================
+# BMI LOGIC
+# =====================================================
+
+def calculate_bmi(weight, height):
+    if not math.isfinite(weight) or not math.isfinite(height):
+        raise ValueError("Enter valid numbers.")
+
+    if weight <= 0 or height <= 0:
+        raise ValueError("Weight and height must be positive.")
+
+    return round(weight / (height ** 2), 2)
+
+
+def classify_bmi(bmi):
+    if bmi < 18.5:
+        return "Underweight"
+    if bmi < 25:
+        return "Normal"
+    if bmi < 30:
+        return "Overweight"
+    return "Obese"
+
+
+# =====================================================
+# SUMMARY CARDS AND HISTORY
+# =====================================================
+
+def refresh_dashboard():
+    """Update all summary values and history records."""
+    try:
+        records = get_records()
     except sqlite3.Error as error:
-        messagebox.showerror(
-            "Database Error",
-            f"Could not create database:\n{error}"
+        messagebox.showerror("Database Error", str(error))
+        return
+
+    count = len(records)
+
+    # Update summary labels directly.
+    total_value.config(text=str(count))
+
+    if count == 0:
+        average_value.config(text="--")
+        latest_value.config(text="--")
+        latest_category.config(
+            text="No records yet",
+            fg=MUTED
+        )
+    else:
+        average = sum(
+            float(record["bmi"]) for record in records
+        ) / count
+
+        latest = records[0]
+
+        average_value.config(text=f"{average:.2f}")
+        latest_value.config(text=f'{latest["bmi"]:.2f}')
+
+        latest_category.config(
+            text=latest["category"],
+            fg=CATEGORY_COLORS.get(latest["category"], TEXT)
         )
 
+    # Clear old history.
+    for item in history_tree.get_children():
+        history_tree.delete(item)
 
-# =========================
-# BMI CALCULATION
-# =========================
+    # Insert updated records.
+    for record in records:
+        try:
+            display_date = datetime.strptime(
+                record["recorded_at"],
+                "%Y-%m-%d %H:%M:%S"
+            ).strftime("%d %b %Y, %I:%M %p")
+        except (ValueError, TypeError):
+            display_date = str(record["recorded_at"])
 
-def calculate_bmi():
-    """Calculate BMI and save the record."""
+        history_tree.insert(
+            "",
+            tk.END,
+            values=(
+                record["user_name"],
+                f'{record["bmi"]:.2f}',
+                record["category"],
+                f'{record["weight"]:.1f}',
+                f'{record["height"] * 100:.1f}',
+                display_date
+            ),
+            tags=(record["category"],)
+        )
 
+    for category, color in CATEGORY_COLORS.items():
+        history_tree.tag_configure(
+            category,
+            foreground=color
+        )
+
+    # Refresh user dropdown.
+    names = sorted({
+        record["user_name"] for record in records
+    })
+
+    user_combo["values"] = names
+
+    if selected_user.get() in names:
+        user_combo.set(selected_user.get())
+    elif names:
+        selected_user.set(names[0])
+        user_combo.set(names[0])
+    else:
+        selected_user.set("")
+        user_combo.set("")
+
+
+# =====================================================
+# CALCULATE AND SAVE BMI
+# =====================================================
+
+def calculate_and_save():
     name = name_entry.get().strip()
     weight_text = weight_entry.get().strip()
     height_text = height_entry.get().strip()
 
-    # Check name
     if not name:
         messagebox.showwarning(
-            "Input Required",
-            "Please enter the user's name."
+            "Missing Name",
+            "Please enter your name."
         )
+        name_entry.focus_set()
         return
 
-    # Check empty fields
     if not weight_text or not height_text:
         messagebox.showwarning(
-            "Input Required",
-            "Please enter both weight and height."
+            "Missing Details",
+            "Please enter weight and height."
         )
         return
 
-    # Convert values
     try:
-        weight = float(weight_text)
-        height = float(height_text)
+        weight_input = float(weight_text)
+        height_input = float(height_text)
 
-    except ValueError:
+        if not math.isfinite(weight_input):
+            raise ValueError
+
+        if not math.isfinite(height_input):
+            raise ValueError
+
+        if weight_input <= 0 or height_input <= 0:
+            raise ValueError
+
+        # Convert inputs to standard units for storage.
+        if units.get() == "Metric (kg / cm)":
+            weight_kg = weight_input
+            height_m = height_input / 100
+        else:
+            weight_kg = weight_input * 0.45359237
+            height_m = height_input * 0.0254
+
+        if not 20 <= height_m * 100 <= 300:
+            messagebox.showerror(
+                "Invalid Height",
+                "Height must be between 20 and 300 cm."
+            )
+            return
+
+        if not 1 <= weight_kg <= 500:
+            messagebox.showerror(
+                "Invalid Weight",
+                "Weight must be between 1 and 500 kg."
+            )
+            return
+
+        bmi = calculate_bmi(weight_kg, height_m)
+        category = classify_bmi(bmi)
+
+    except (ValueError, OverflowError):
         messagebox.showerror(
             "Invalid Input",
-            "Weight and height must be numeric values."
+            "Enter valid positive numbers for weight and height."
         )
         return
 
-    # Check positive values
-    if weight <= 0 or height <= 0:
-        messagebox.showerror(
-            "Invalid Input",
-            "Weight and height must be greater than zero."
-        )
+    recorded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            conn.execute("""
+                INSERT INTO bmi_records
+                (user_name, weight, height, bmi, category, recorded_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                name,
+                weight_kg,
+                height_m,
+                bmi,
+                category,
+                recorded_at
+            ))
+
+    except sqlite3.Error as error:
+        messagebox.showerror("Save Failed", str(error))
         return
 
-    # BMI formula
-    bmi = weight / (height ** 2)
-    bmi = round(bmi, 2)
+    result_bmi.config(text=f"{bmi:.2f}")
+    result_category.config(
+        text=category,
+        fg=CATEGORY_COLORS.get(category, TEXT)
+    )
 
-    # BMI category
-    if bmi < 18.5:
-        category = "Underweight"
-        result_color = "#3498db"
+    selected_user.set(name)
+    user_combo.set(name)
 
-    elif bmi < 25:
-        category = "Normal"
-        result_color = "#27ae60"
+    refresh_dashboard()
 
-    elif bmi < 30:
-        category = "Overweight"
-        result_color = "#f39c12"
+    messagebox.showinfo(
+        "BMI Saved",
+        f"Record saved successfully!\n\n"
+        f"Name: {name}\n"
+        f"BMI: {bmi:.2f}\n"
+        f"Category: {category}"
+    )
 
+
+# =====================================================
+# INPUT CONTROLS
+# =====================================================
+
+def clear_fields():
+    name_entry.delete(0, tk.END)
+    weight_entry.delete(0, tk.END)
+    height_entry.delete(0, tk.END)
+
+    result_bmi.config(text="--")
+    result_category.config(
+        text="Waiting for calculation",
+        fg=MUTED
+    )
+
+    name_entry.focus_set()
+
+
+def update_unit_labels(_event=None):
+    weight_entry.delete(0, tk.END)
+    height_entry.delete(0, tk.END)
+
+    if units.get() == "Metric (kg / cm)":
+        weight_label.config(text="Weight (kg)")
+        height_label.config(text="Height (cm)")
     else:
-        category = "Obese"
-        result_color = "#e74c3c"
+        weight_label.config(text="Weight (lbs)")
+        height_label.config(text="Height (inches)")
 
-    # Display result
-    result_label.config(
-        text=f"BMI: {bmi}\nCategory: {category}",
-        foreground=result_color
+
+# =====================================================
+# CSV EXPORT
+# =====================================================
+
+def export_csv():
+    destination = filedialog.asksaveasfilename(
+        title="Export BMI History",
+        defaultextension=".csv",
+        filetypes=[("CSV files", "*.csv")],
+        initialfile="bmi_history.csv"
     )
 
-    # Save record
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-
-        recorded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        cursor.execute("""
-            INSERT INTO bmi_records
-            (user_name, weight, height, bmi, category, recorded_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            name,
-            weight,
-            height,
-            bmi,
-            category,
-            recorded_at
-        ))
-
-        conn.commit()
-        conn.close()
-
-        messagebox.showinfo(
-            "Success",
-            f"BMI calculated successfully!\n\n"
-            f"User: {name}\n"
-            f"BMI: {bmi}\n"
-            f"Category: {category}"
-        )
-
-        load_users()
-
-    except sqlite3.Error as error:
-        messagebox.showerror(
-            "Database Error",
-            f"Could not save BMI record:\n{error}"
-        )
-
-
-# =========================
-# LOAD USERS
-# =========================
-
-def load_users():
-    """Load unique user names into the dropdown."""
-
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT DISTINCT user_name
-            FROM bmi_records
-            ORDER BY user_name
-        """)
-
-        users = [row[0] for row in cursor.fetchall()]
-
-        conn.close()
-
-        user_combo["values"] = users
-
-    except sqlite3.Error as error:
-        messagebox.showerror(
-            "Database Error",
-            f"Could not load users:\n{error}"
-        )
-
-
-# =========================
-# SHOW HISTORY
-# =========================
-
-def show_history():
-    """Display all BMI records in a new window."""
-
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT user_name, weight, height, bmi, category, recorded_at
-            FROM bmi_records
-            ORDER BY id DESC
-        """)
-
-        records = cursor.fetchall()
-        conn.close()
-
-    except sqlite3.Error as error:
-        messagebox.showerror(
-            "Database Error",
-            f"Could not read BMI history:\n{error}"
-        )
+    if not destination:
         return
 
-    if not records:
+    try:
+        records = get_records()
+
+        with open(
+            destination,
+            "w",
+            newline="",
+            encoding="utf-8-sig"
+        ) as file:
+            writer = csv.writer(file)
+            writer.writerow([
+                "ID", "Name", "Weight (kg)", "Height (m)",
+                "BMI", "Category", "Recorded At"
+            ])
+
+            for record in records:
+                writer.writerow([
+                    record["id"],
+                    record["user_name"],
+                    record["weight"],
+                    record["height"],
+                    record["bmi"],
+                    record["category"],
+                    record["recorded_at"]
+                ])
+
         messagebox.showinfo(
-            "History",
-            "No BMI records found."
+            "Export Complete",
+            f"{len(records)} records exported successfully."
         )
-        return
 
-    history_window = tk.Toplevel(root)
-    history_window.title("BMI History")
-    history_window.geometry("850x450")
-
-    title = ttk.Label(
-        history_window,
-        text="BMI History",
-        font=("Arial", 18, "bold")
-    )
-    title.pack(pady=10)
-
-    columns = (
-        "Name",
-        "Weight",
-        "Height",
-        "BMI",
-        "Category",
-        "Date & Time"
-    )
-
-    tree = ttk.Treeview(
-        history_window,
-        columns=columns,
-        show="headings"
-    )
-
-    for column in columns:
-        tree.heading(column, text=column)
-        tree.column(column, width=120)
-
-    for record in records:
-        tree.insert("", tk.END, values=record)
-
-    tree.pack(
-        fill=tk.BOTH,
-        expand=True,
-        padx=10,
-        pady=10
-    )
+    except (OSError, sqlite3.Error) as error:
+        messagebox.showerror("Export Failed", str(error))
 
 
-# =========================
-# SHOW BMI TREND
-# =========================
+# =====================================================
+# BMI TREND CHART
+# =====================================================
 
 def show_trend():
-    """Show BMI trend chart for the selected user."""
+    name = user_combo.get().strip()
 
-    selected_user = user_combo.get().strip()
-
-    if not selected_user:
+    if not name:
         messagebox.showwarning(
             "Select User",
             "Please select a user first."
@@ -276,312 +392,512 @@ def show_trend():
         return
 
     try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT recorded_at, bmi
-            FROM bmi_records
-            WHERE user_name = ?
-            ORDER BY id
-        """, (selected_user,))
-
-        records = cursor.fetchall()
-        conn.close()
-
+        records = list(reversed(get_records(name)))
     except sqlite3.Error as error:
-        messagebox.showerror(
-            "Database Error",
-            f"Could not read trend data:\n{error}"
-        )
+        messagebox.showerror("Database Error", str(error))
         return
 
     if not records:
         messagebox.showinfo(
-            "No Data",
-            f"No BMI records found for {selected_user}."
+            "No History",
+            f"No records found for {name}."
         )
         return
 
-    dates = [record[0] for record in records]
-    bmi_values = [record[1] for record in records]
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        messagebox.showerror(
+            "Missing Library",
+            "Install matplotlib with:\n"
+            "python -m pip install matplotlib"
+        )
+        return
 
-    # Create graph
+    dates = [record["recorded_at"] for record in records]
+    values = [record["bmi"] for record in records]
+
     plt.figure(figsize=(9, 5))
-
     plt.plot(
         dates,
-        bmi_values,
+        values,
         marker="o",
-        linewidth=2
+        linewidth=2,
+        color=PURPLE,
+        label="BMI"
     )
 
     plt.axhline(
-        y=18.5,
-        linestyle="--",
-        label="18.5"
+        18.5, linestyle="--",
+        color="#4285D4", label="BMI 18.5"
     )
-
     plt.axhline(
-        y=25,
-        linestyle="--",
-        label="25"
+        25, linestyle="--",
+        color="#24A879", label="BMI 25"
     )
-
     plt.axhline(
-        y=30,
-        linestyle="--",
-        label="30"
+        30, linestyle="--",
+        color="#E65B70", label="BMI 30"
     )
 
-    plt.title(f"BMI Trend - {selected_user}")
-    plt.xlabel("Date & Time")
+    plt.title(f"BMI Progress - {name}")
+    plt.xlabel("Date and Time")
     plt.ylabel("BMI")
-
-    plt.xticks(rotation=45)
-    plt.grid(True, alpha=0.3)
+    plt.xticks(rotation=35, ha="right")
+    plt.grid(alpha=0.2)
     plt.legend()
-
     plt.tight_layout()
     plt.show()
 
 
-# =========================
-# CLEAR FIELDS
-# =========================
+def on_history_double_click(_event=None):
+    selection = history_tree.selection()
 
-def clear_fields():
-    """Clear all input fields."""
+    if not selection:
+        return
+
+    values = history_tree.item(selection[0], "values")
 
     name_entry.delete(0, tk.END)
-    weight_entry.delete(0, tk.END)
-    height_entry.delete(0, tk.END)
+    name_entry.insert(0, values[0])
 
-    result_label.config(
-        text="BMI: --\nCategory: --",
-        foreground="#333333"
+    selected_user.set(values[0])
+    user_combo.set(values[0])
+
+
+# =====================================================
+# UI HELPERS
+# =====================================================
+
+def make_card(parent, title, subtitle=None):
+    frame = tk.Frame(
+        parent,
+        bg=CARD,
+        highlightbackground=BORDER,
+        highlightthickness=1,
+        padx=16,
+        pady=14
+    )
+
+    tk.Label(
+        frame,
+        text=title,
+        font=("Segoe UI", 12, "bold"),
+        bg=CARD,
+        fg=TEXT
+    ).pack(anchor="w")
+
+    if subtitle:
+        tk.Label(
+            frame,
+            text=subtitle,
+            font=("Segoe UI", 9),
+            bg=CARD,
+            fg=MUTED,
+            wraplength=400,
+            justify="left"
+        ).pack(anchor="w", pady=(4, 12))
+
+    return frame
+
+
+def make_button(parent, text, command, primary=False):
+    background = PURPLE if primary else "#F0ECFF"
+    foreground = "#FFFFFF" if primary else PURPLE_DARK
+
+    return tk.Button(
+        parent,
+        text=text,
+        command=command,
+        bg=background,
+        fg=foreground,
+        activebackground=PURPLE_DARK if primary else "#E4DCFF",
+        activeforeground="#FFFFFF" if primary else PURPLE_DARK,
+        font=("Segoe UI", 10, "bold"),
+        relief="flat",
+        bd=0,
+        padx=12,
+        pady=9,
+        cursor="hand2"
     )
 
 
-# =========================
-# MAIN WINDOW
-# =========================
+# =====================================================
+# MAIN APPLICATION
+# =====================================================
 
 create_database()
 
 root = tk.Tk()
-root.title("Advanced BMI Calculator")
-root.geometry("650x650")
-root.resizable(False, False)
+root.title("Health Tracker | BMI Dashboard")
+root.geometry("1180x780")
+root.minsize(1000, 680)
+root.configure(bg=BG)
 
+style = ttk.Style()
+style.theme_use("clam")
 
-# Main title
-title_label = tk.Label(
-    root,
-    text="Advanced BMI Calculator",
-    font=("Arial", 24, "bold")
-)
-title_label.pack(pady=20)
-
-
-subtitle_label = tk.Label(
-    root,
-    text="Calculate, save and track BMI records",
-    font=("Arial", 11)
-)
-subtitle_label.pack(pady=(0, 20))
-
-
-# Input frame
-input_frame = ttk.LabelFrame(
-    root,
-    text="Enter Details",
-    padding=20
-)
-input_frame.pack(
-    padx=40,
-    fill="x"
+style.configure(
+    "Treeview",
+    background=CARD,
+    fieldbackground=CARD,
+    foreground=TEXT,
+    rowheight=32,
+    borderwidth=0,
+    font=("Segoe UI", 9)
 )
 
+style.configure(
+    "Treeview.Heading",
+    background="#F0ECFF",
+    foreground=TEXT,
+    font=("Segoe UI", 9, "bold"),
+    relief="flat",
+    padding=8
+)
 
-# Name
-ttk.Label(
-    input_frame,
-    text="User Name:"
-).grid(
+style.map(
+    "Treeview",
+    background=[("selected", "#E7DFFF")],
+    foreground=[("selected", TEXT)]
+)
+
+# ---------------- HEADER ----------------
+
+header = tk.Frame(root, bg=BG)
+header.pack(fill="x", padx=24, pady=(18, 12))
+
+tk.Label(
+    header,
+    text="Health Tracker",
+    font=("Segoe UI", 25, "bold"),
+    bg=BG,
+    fg=TEXT
+).pack(anchor="w")
+
+tk.Label(
+    header,
+    text="Your personal BMI and wellness dashboard",
+    font=("Segoe UI", 11),
+    bg=BG,
+    fg=MUTED
+).pack(anchor="w", pady=(2, 0))
+
+
+# ---------------- SUMMARY CARDS ----------------
+
+summary_frame = tk.Frame(root, bg=BG)
+summary_frame.pack(fill="x", padx=24, pady=(0, 14))
+
+summary_frame.grid_columnconfigure(0, weight=1)
+summary_frame.grid_columnconfigure(1, weight=1)
+summary_frame.grid_columnconfigure(2, weight=1)
+
+
+def create_summary_card(column, title, initial_value="--"):
+    """Create each summary card and its own child labels."""
+    card = tk.Frame(
+        summary_frame,
+        bg=CARD,
+        highlightbackground=BORDER,
+        highlightthickness=1,
+        padx=16,
+        pady=12
+    )
+
+    card.grid(
+        row=0,
+        column=column,
+        sticky="nsew",
+        padx=(0, 8) if column < 2 else (0, 0)
+    )
+
+    tk.Label(
+        card,
+        text=title,
+        font=("Segoe UI", 10),
+        bg=CARD,
+        fg=MUTED
+    ).pack(anchor="w")
+
+    value = tk.Label(
+        card,
+        text=initial_value,
+        font=("Segoe UI", 22, "bold"),
+        bg=CARD,
+        fg=PURPLE
+    )
+    value.pack(anchor="w", pady=(5, 0))
+
+    return card, value
+
+
+total_card, total_value = create_summary_card(
+    0, "Total Records", "0"
+)
+
+average_card, average_value = create_summary_card(
+    1, "Average BMI"
+)
+
+latest_card, latest_value = create_summary_card(
+    2, "Latest BMI"
+)
+
+latest_category = tk.Label(
+    latest_card,
+    text="No records yet",
+    font=("Segoe UI", 10, "bold"),
+    bg=CARD,
+    fg=MUTED
+)
+latest_category.pack(anchor="w", pady=(2, 0))
+
+
+# ---------------- MAIN CONTENT ----------------
+
+main = tk.Frame(root, bg=BG)
+main.pack(fill="both", expand=True, padx=24, pady=(0, 20))
+
+main.grid_columnconfigure(0, weight=4, uniform="main")
+main.grid_columnconfigure(1, weight=6, uniform="main")
+main.grid_rowconfigure(0, weight=1)
+
+
+# ---------------- CALCULATOR PANEL ----------------
+
+calculator = make_card(
+    main,
+    "BMI Calculator",
+    "Enter your details to calculate and save BMI."
+)
+
+calculator.grid(
     row=0,
     column=0,
-    padx=10,
-    pady=10,
-    sticky="w"
+    sticky="nsew",
+    padx=(0, 8)
 )
 
-name_entry = ttk.Entry(
-    input_frame,
-    width=35
+tk.Label(
+    calculator,
+    text="Full name",
+    font=("Segoe UI", 10, "bold"),
+    bg=CARD,
+    fg=TEXT
+).pack(anchor="w", pady=(5, 4))
+
+name_entry = ttk.Entry(calculator, font=("Segoe UI", 11))
+name_entry.pack(fill="x", ipady=5)
+
+tk.Label(
+    calculator,
+    text="Measurement units",
+    font=("Segoe UI", 10, "bold"),
+    bg=CARD,
+    fg=TEXT
+).pack(anchor="w", pady=(12, 4))
+
+units = tk.StringVar(value="Metric (kg / cm)")
+
+unit_combo = ttk.Combobox(
+    calculator,
+    textvariable=units,
+    values=("Metric (kg / cm)", "Imperial (lbs / inches)"),
+    state="readonly",
+    font=("Segoe UI", 10)
 )
-name_entry.grid(
+unit_combo.pack(fill="x", ipady=3)
+unit_combo.bind("<<ComboboxSelected>>", update_unit_labels)
+
+weight_label = tk.Label(
+    calculator,
+    text="Weight (kg)",
+    font=("Segoe UI", 10, "bold"),
+    bg=CARD,
+    fg=TEXT
+)
+weight_label.pack(anchor="w", pady=(12, 4))
+
+weight_entry = ttk.Entry(calculator, font=("Segoe UI", 11))
+weight_entry.pack(fill="x", ipady=5)
+
+height_label = tk.Label(
+    calculator,
+    text="Height (cm)",
+    font=("Segoe UI", 10, "bold"),
+    bg=CARD,
+    fg=TEXT
+)
+height_label.pack(anchor="w", pady=(12, 4))
+
+height_entry = ttk.Entry(calculator, font=("Segoe UI", 11))
+height_entry.pack(fill="x", ipady=5)
+
+make_button(
+    calculator,
+    "Calculate & Save BMI",
+    calculate_and_save,
+    primary=True
+).pack(fill="x", pady=(16, 7))
+
+make_button(
+    calculator,
+    "Clear Fields",
+    clear_fields
+).pack(fill="x")
+
+
+# ---------------- RESULT CARD ----------------
+
+result_card = tk.Frame(
+    calculator,
+    bg="#F5F1FF",
+    padx=12,
+    pady=10
+)
+result_card.pack(fill="x", pady=(14, 0))
+
+tk.Label(
+    result_card,
+    text="YOUR BMI",
+    font=("Segoe UI", 9, "bold"),
+    bg="#F5F1FF",
+    fg=MUTED
+).pack(anchor="w")
+
+result_bmi = tk.Label(
+    result_card,
+    text="--",
+    font=("Segoe UI", 26, "bold"),
+    bg="#F5F1FF",
+    fg=PURPLE
+)
+result_bmi.pack(anchor="w")
+
+result_category = tk.Label(
+    result_card,
+    text="Waiting for calculation",
+    font=("Segoe UI", 10, "bold"),
+    bg="#F5F1FF",
+    fg=MUTED
+)
+result_category.pack(anchor="w")
+
+tk.Label(
+    calculator,
+    text="BMI is a screening measure, not a diagnosis.",
+    font=("Segoe UI", 8),
+    bg=CARD,
+    fg=MUTED,
+    wraplength=300,
+    justify="left"
+).pack(anchor="w", pady=(10, 0))
+
+
+# ---------------- HISTORY PANEL ----------------
+
+history_panel = make_card(
+    main,
+    "BMI History",
+    "Saved records. Double-click a row to select its user."
+)
+
+history_panel.grid(
     row=0,
     column=1,
-    padx=10,
-    pady=10
+    sticky="nsew",
+    padx=(8, 0)
 )
 
+selected_user = tk.StringVar()
 
-# Weight
-ttk.Label(
-    input_frame,
-    text="Weight (kg):"
-).grid(
-    row=1,
-    column=0,
-    padx=10,
-    pady=10,
-    sticky="w"
-)
-
-weight_entry = ttk.Entry(
-    input_frame,
-    width=35
-)
-weight_entry.grid(
-    row=1,
-    column=1,
-    padx=10,
-    pady=10
-)
-
-
-# Height
-ttk.Label(
-    input_frame,
-    text="Height (m):"
-).grid(
-    row=2,
-    column=0,
-    padx=10,
-    pady=10,
-    sticky="w"
-)
-
-height_entry = ttk.Entry(
-    input_frame,
-    width=35
-)
-height_entry.grid(
-    row=2,
-    column=1,
-    padx=10,
-    pady=10
-)
-
-
-# Calculate button
-calculate_button = ttk.Button(
-    root,
-    text="Calculate BMI",
-    command=calculate_bmi
-)
-calculate_button.pack(pady=20)
-
-
-# Result
-result_label = tk.Label(
-    root,
-    text="BMI: --\nCategory: --",
-    font=("Arial", 18, "bold")
-)
-result_label.pack(pady=10)
-
-
-# User selection frame
-user_frame = ttk.LabelFrame(
-    root,
-    text="BMI Trend",
-    padding=15
-)
-user_frame.pack(
-    padx=40,
-    pady=15,
-    fill="x"
-)
-
-
-ttk.Label(
-    user_frame,
-    text="Select User:"
-).pack(
-    side="left",
-    padx=10
-)
-
+toolbar = tk.Frame(history_panel, bg=CARD)
+toolbar.pack(fill="x", pady=(0, 10))
 
 user_combo = ttk.Combobox(
-    user_frame,
-    width=25,
-    state="readonly"
+    toolbar,
+    textvariable=selected_user,
+    state="readonly",
+    width=15,
+    font=("Segoe UI", 9)
 )
-user_combo.pack(
-    side="left",
-    padx=10
-)
+user_combo.pack(side="left", padx=(0, 6), ipady=3)
+
+make_button(
+    toolbar,
+    "Show Trend",
+    show_trend
+).pack(side="left", padx=(0, 6))
+
+make_button(
+    toolbar,
+    "Export CSV",
+    export_csv
+).pack(side="left")
 
 
-trend_button = ttk.Button(
-    user_frame,
-    text="Show Trend",
-    command=show_trend
-)
-trend_button.pack(
-    side="left",
-    padx=10
-)
+# ---------------- HISTORY TABLE ----------------
 
+table_frame = tk.Frame(history_panel, bg=CARD)
+table_frame.pack(fill="both", expand=True)
 
-# Bottom buttons
-button_frame = ttk.Frame(root)
-button_frame.pack(pady=20)
-
-
-history_button = ttk.Button(
-    button_frame,
-    text="View History",
-    command=show_history
-)
-history_button.grid(
-    row=0,
-    column=0,
-    padx=10
+columns = (
+    "Name", "BMI", "Category",
+    "Weight kg", "Height cm", "Date & Time"
 )
 
-
-clear_button = ttk.Button(
-    button_frame,
-    text="Clear",
-    command=clear_fields
-)
-clear_button.grid(
-    row=0,
-    column=1,
-    padx=10
+history_tree = ttk.Treeview(
+    table_frame,
+    columns=columns,
+    show="headings"
 )
 
+widths = (100, 60, 95, 85, 85, 150)
 
-exit_button = ttk.Button(
-    button_frame,
-    text="Exit",
-    command=root.destroy
+for column, width in zip(columns, widths):
+    history_tree.heading(column, text=column)
+    history_tree.column(
+        column,
+        width=width,
+        minwidth=55,
+        anchor="center",
+        stretch=True
+    )
+
+vertical_scroll = ttk.Scrollbar(
+    table_frame,
+    orient="vertical",
+    command=history_tree.yview
 )
-exit_button.grid(
-    row=0,
-    column=2,
-    padx=10
+
+horizontal_scroll = ttk.Scrollbar(
+    table_frame,
+    orient="horizontal",
+    command=history_tree.xview
+)
+
+history_tree.configure(
+    yscrollcommand=vertical_scroll.set,
+    xscrollcommand=horizontal_scroll.set
+)
+
+history_tree.grid(row=0, column=0, sticky="nsew")
+vertical_scroll.grid(row=0, column=1, sticky="ns")
+horizontal_scroll.grid(row=1, column=0, sticky="ew")
+
+table_frame.grid_rowconfigure(0, weight=1)
+table_frame.grid_columnconfigure(0, weight=1)
+
+history_tree.bind(
+    "<Double-1>",
+    on_history_double_click
 )
 
 
-# Load existing users
-load_users()
+# ---------------- START APPLICATION ----------------
 
+refresh_dashboard()
+name_entry.focus_set()
 
-# Start application
 root.mainloop()
