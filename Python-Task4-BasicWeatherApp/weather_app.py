@@ -1,1085 +1,907 @@
+
 import os
 import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
 from datetime import datetime
-from io import BytesIO
+from collections import defaultdict
 
 import requests
-import tkinter as tk
-from tkinter import ttk
-from PIL import Image, ImageTk
 from dotenv import load_dotenv
 
+# =========================================================
+# CLIMA WEATHER DASHBOARD
+# =========================================================
 
-# ---------------------------------------------------------
-# LOAD ENVIRONMENT VARIABLES
-# ---------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-load_dotenv()
-
-API_KEY = os.getenv("OPENWEATHER_API_KEY")
+API_KEY = os.getenv("OPENWEATHER_API_KEY", "").strip()
 
 CURRENT_URL = "https://api.openweathermap.org/data/2.5/weather"
 FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
-ICON_URL = "https://openweathermap.org/img/wn/{}@2x.png"
+
+ORANGE = "#FFA526"
+TEAL = "#176F7B"
+TEAL_DARK = "#115B68"
+CREAM = "#F2EAE1"
+WHITE = "#FFFFFF"
+TEXT = "#276B7A"
+MUTED = "#78919A"
+BORDER = "#E9E1DA"
+PURPLE = "#7257E8"
+
+WEATHER_ICONS = {
+    "clear": "☀",
+    "cloud": "☁",
+    "rain": "🌧",
+    "drizzle": "🌦",
+    "thunder": "⛈",
+    "snow": "❄",
+    "mist": "🌫",
+    "fog": "🌫",
+    "haze": "🌫",
+    "smoke": "🌫",
+}
+
+def icon_for(condition):
+    condition = str(condition).lower()
+    for key, value in WEATHER_ICONS.items():
+        if key in condition:
+            return value
+    return "🌤"
+
+def temp_text(value, unit="metric"):
+    return f"{round(value)}°{'C' if unit == 'metric' else 'F'}"
 
 
-# ---------------------------------------------------------
-# WEATHER APPLICATION
-# ---------------------------------------------------------
-
-class WeatherApp:
-
+class ClimaDashboard:
     def __init__(self, root):
-
         self.root = root
+        self.root.title("CLIMA | Weather Intelligence")
+        self.root.geometry("1280x800")
+        self.root.minsize(1050, 720)
+        self.root.configure(bg=ORANGE)
 
-        self.root.title("Weather App")
-        self.root.geometry("1100x760")
-        self.root.minsize(900, 650)
-
-        self.root.configure(bg="#eef5ff")
-
-        # Default unit
         self.unit = "metric"
+        self.city = "London"
+        self.busy = False
+        self.request_number = 0
+        self.current_data = None
+        self.forecast_data = None
 
-        # Last searched city
-        self.last_city = ""
+        self.build_layout()
+        self.root.after(300, self.load_default_city)
 
-        # Keep image references alive
-        self.icon_references = []
+    # =====================================================
+    # UI HELPERS
+    # =====================================================
 
-        self.create_styles()
-        self.create_widgets()
-
-    # -----------------------------------------------------
-    # STYLES
-    # -----------------------------------------------------
-
-    def create_styles(self):
-
-        style = ttk.Style()
-
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-
-        style.configure(
-            "Title.TLabel",
-            background="#1e3a5f",
-            foreground="white",
-            font=("Segoe UI", 24, "bold")
+    def label(
+        self, parent, text, size=10, color=TEXT,
+        bold=False, bg=WHITE, anchor="w"
+    ):
+        return tk.Label(
+            parent,
+            text=text,
+            font=("Segoe UI", size, "bold" if bold else "normal"),
+            fg=color,
+            bg=bg,
+            anchor=anchor
         )
 
-        style.configure(
-            "Subtitle.TLabel",
-            background="#1e3a5f",
-            foreground="#dcecff",
-            font=("Segoe UI", 11)
+    def card(self, parent, padding=12, bg=WHITE):
+        return tk.Frame(
+            parent,
+            bg=bg,
+            padx=padding,
+            pady=padding,
+            highlightbackground=BORDER,
+            highlightthickness=1
         )
 
-        style.configure(
-            "CardTitle.TLabel",
-            background="white",
-            foreground="#1e3a5f",
-            font=("Segoe UI", 13, "bold")
-        )
-
-        style.configure(
-            "WeatherValue.TLabel",
-            background="white",
-            foreground="#172b4d",
-            font=("Segoe UI", 30, "bold")
-        )
-
-        style.configure(
-            "WeatherInfo.TLabel",
-            background="white",
-            foreground="#455a73",
-            font=("Segoe UI", 10)
-        )
-
-    # -----------------------------------------------------
-    # CREATE GUI
-    # -----------------------------------------------------
-
-    def create_widgets(self):
-
-        # ================= HEADER =================
-
-        header = tk.Frame(
-            self.root,
-            bg="#1e3a5f",
-            height=125
-        )
-
-        header.pack(fill="x")
-        header.pack_propagate(False)
-
-        ttk.Label(
-            header,
-            text="Weather App",
-            style="Title.TLabel"
-        ).pack(pady=(18, 2))
-
-        ttk.Label(
-            header,
-            text="Real-time weather, hourly forecast & 5-day forecast",
-            style="Subtitle.TLabel"
-        ).pack()
-
-        # ================= SEARCH AREA =================
-
-        search_frame = tk.Frame(
-            self.root,
-            bg="#eef5ff"
-        )
-
-        search_frame.pack(
-            fill="x",
-            padx=30,
-            pady=20
-        )
-
-        self.city_entry = ttk.Entry(
-            search_frame,
-            font=("Segoe UI", 13),
-            width=40
-        )
-
-        self.city_entry.pack(
-            side="left",
-            padx=(0, 10),
-            ipady=7
-        )
-
-        self.city_entry.insert(0, "London")
-
-        self.get_button = ttk.Button(
-            search_frame,
-            text="Get Weather",
-            command=self.get_weather
-        )
-
-        self.get_button.pack(
-            side="left",
-            padx=5
-        )
-
-        self.unit_button = ttk.Button(
-            search_frame,
-            text="Switch to °F",
-            command=self.toggle_unit
-        )
-
-        self.unit_button.pack(
-            side="left",
-            padx=5
-        )
-
-        # Enter key support
-        self.city_entry.bind(
-            "<Return>",
-            lambda event: self.get_weather()
-        )
-
-        # ================= STATUS =================
-
-        self.status_label = tk.Label(
-            self.root,
-            text="Enter a city and click Get Weather",
-            bg="#eef5ff",
-            fg="#36506b",
-            font=("Segoe UI", 10)
-        )
-
-        self.status_label.pack()
-
-        # ================= CURRENT WEATHER CARD =================
-
-        current_card = tk.Frame(
-            self.root,
-            bg="white",
-            highlightthickness=1,
-            highlightbackground="#d5e3f2"
-        )
-
-        current_card.pack(
-            fill="x",
-            padx=30,
-            pady=10
-        )
-
-        self.location_label = ttk.Label(
-            current_card,
-            text="Weather Information",
-            style="CardTitle.TLabel"
-        )
-
-        self.location_label.pack(
-            pady=(15, 5)
-        )
-
-        self.current_content = tk.Frame(
-            current_card,
-            bg="white"
-        )
-
-        self.current_content.pack(
-            fill="x",
-            padx=20,
-            pady=(5, 20)
-        )
-
-        # Weather icon
-
-        self.icon_label = tk.Label(
-            self.current_content,
-            bg="white"
-        )
-
-        self.icon_label.pack(
-            side="left",
-            padx=30
-        )
-
-        # Information
-
-        info_frame = tk.Frame(
-            self.current_content,
-            bg="white"
-        )
-
-        info_frame.pack(
-            side="left",
-            fill="both",
-            expand=True
-        )
-
-        self.temperature_label = ttk.Label(
-            info_frame,
-            text="--°",
-            style="WeatherValue.TLabel"
-        )
-
-        self.temperature_label.pack(
-            anchor="w"
-        )
-
-        self.condition_label = ttk.Label(
-            info_frame,
-            text="Condition: --",
-            style="WeatherInfo.TLabel"
-        )
-
-        self.condition_label.pack(
-            anchor="w",
-            pady=2
-        )
-
-        self.feels_label = ttk.Label(
-            info_frame,
-            text="Feels like: --",
-            style="WeatherInfo.TLabel"
-        )
-
-        self.feels_label.pack(
-            anchor="w",
-            pady=2
-        )
-
-        self.humidity_label = ttk.Label(
-            info_frame,
-            text="Humidity: --",
-            style="WeatherInfo.TLabel"
-        )
-
-        self.humidity_label.pack(
-            anchor="w",
-            pady=2
-        )
-
-        self.wind_label = ttk.Label(
-            info_frame,
-            text="Wind: --",
-            style="WeatherInfo.TLabel"
-        )
-
-        self.wind_label.pack(
-            anchor="w",
-            pady=2
-        )
-
-        self.pressure_label = ttk.Label(
-            info_frame,
-            text="Pressure: --",
-            style="WeatherInfo.TLabel"
-        )
-
-        self.pressure_label.pack(
-            anchor="w",
-            pady=2
-        )
-
-        # ================= FORECAST AREA =================
-
-        forecast_container = tk.Frame(
-            self.root,
-            bg="#eef5ff"
-        )
-
-        forecast_container.pack(
-            fill="both",
-            expand=True,
-            padx=30,
-            pady=10
-        )
-
-        # ================= HOURLY =================
-
-        hourly_card = tk.Frame(
-            forecast_container,
-            bg="white",
-            highlightthickness=1,
-            highlightbackground="#d5e3f2"
-        )
-
-        hourly_card.pack(
-            side="left",
-            fill="both",
-            expand=True,
-            padx=(0, 8)
-        )
-
-        ttk.Label(
-            hourly_card,
-            text="Next 6 Hours",
-            style="CardTitle.TLabel"
-        ).pack(
-            pady=12
-        )
-
-        self.hourly_frame = tk.Frame(
-            hourly_card,
-            bg="white"
-        )
-
-        self.hourly_frame.pack(
-            fill="both",
-            expand=True,
+    def button(self, parent, text, command, bg=TEAL, fg=WHITE):
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=bg,
+            fg=fg,
+            activebackground=TEAL_DARK,
+            activeforeground=WHITE,
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            bd=0,
             padx=10,
-            pady=5
+            pady=7,
+            cursor="hand2"
         )
 
-        # ================= DAILY =================
+    # =====================================================
+    # MAIN LAYOUT
+    # =====================================================
 
-        daily_card = tk.Frame(
-            forecast_container,
-            bg="white",
-            highlightthickness=1,
-            highlightbackground="#d5e3f2"
+    def build_layout(self):
+        outer = tk.Frame(self.root, bg=ORANGE, padx=20, pady=16)
+        outer.pack(fill="both", expand=True)
+
+        # App surface
+        self.surface = tk.Frame(outer, bg=CREAM)
+        self.surface.pack(fill="both", expand=True)
+
+        self.surface.grid_columnconfigure(1, weight=1)
+        self.surface.grid_rowconfigure(0, weight=1)
+
+        # Left navigation sidebar
+        self.sidebar = tk.Frame(
+            self.surface,
+            bg=TEAL,
+            width=150,
+            padx=12,
+            pady=18
+        )
+        self.sidebar.grid(row=0, column=0, sticky="ns")
+        self.sidebar.grid_propagate(False)
+
+        self.label(
+            self.sidebar, "☀", 25, WHITE, True, TEAL, "center"
+        ).pack(fill="x", pady=(2, 0))
+
+        self.label(
+            self.sidebar, "CLIMA", 14, WHITE, True, TEAL, "center"
+        ).pack(fill="x", pady=(0, 24))
+
+        self.nav_buttons = {}
+        for name, symbol in [
+            ("Overview", "▦"),
+            ("Forecasts", "☼"),
+            ("Detailing", "⌁"),
+            ("Alerts", "♟"),
+            ("Settings", "⚙"),
+        ]:
+            btn = tk.Button(
+                self.sidebar,
+                text=f"{symbol}  {name}",
+                anchor="w",
+                bg=TEAL,
+                fg="#D8EEF0",
+                activebackground=TEAL_DARK,
+                activeforeground=WHITE,
+                font=("Segoe UI", 9, "bold"),
+                relief="flat",
+                bd=0,
+                padx=7,
+                pady=10,
+                cursor="hand2",
+                command=lambda n=name: self.navigate(n)
+            )
+            btn.pack(fill="x", pady=2)
+            self.nav_buttons[name] = btn
+
+        self.nav_buttons["Overview"].config(fg=ORANGE)
+
+        tk.Frame(self.sidebar, bg=TEAL).pack(fill="both", expand=True)
+
+        self.label(
+            self.sidebar, "●  Live weather", 8, "#D8EEF0",
+            False, TEAL
+        ).pack(anchor="w", pady=(8, 2))
+
+        self.label(
+            self.sidebar, "Powered by OpenWeather", 7, "#C4E0E3",
+            False, TEAL
+        ).pack(anchor="w", pady=(0, 8))
+
+        # Main content
+        self.content = tk.Frame(
+            self.surface, bg=CREAM, padx=18, pady=14
+        )
+        self.content.grid(row=0, column=1, sticky="nsew")
+        self.content.grid_columnconfigure(0, weight=1)
+        self.content.grid_rowconfigure(2, weight=1)
+
+        self.build_top_bar()
+        self.build_current_weather()
+        self.build_bottom_panels()
+
+    def navigate(self, name):
+        for key, btn in self.nav_buttons.items():
+            btn.config(fg=ORANGE if key == name else "#D8EEF0")
+
+        if name == "Forecasts":
+            self.status.config(text="Forecasts update after a city search.")
+        elif name == "Detailing":
+            self.status.config(text="Detailed weather metrics are shown below.")
+        elif name == "Alerts":
+            self.status.config(text="Weather alerts depend on API availability.")
+        elif name == "Settings":
+            self.toggle_unit()
+        else:
+            self.status.config(text="Weather overview")
+
+    # =====================================================
+    # TOP BAR AND SEARCH
+    # =====================================================
+
+    def build_top_bar(self):
+        top = tk.Frame(self.content, bg=CREAM)
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        top.grid_columnconfigure(0, weight=1)
+
+        self.search_entry = ttk.Entry(top, font=("Segoe UI", 10))
+        self.search_entry.insert(0, self.city)
+        self.search_entry.grid(row=0, column=0, sticky="ew", ipady=7)
+
+        self.search_entry.bind(
+            "<Return>", lambda _event: self.search_weather()
         )
 
-        daily_card.pack(
-            side="right",
-            fill="both",
-            expand=True,
-            padx=(8, 0)
+        self.button(
+            top, "Search", self.search_weather, TEAL
+        ).grid(row=0, column=1, padx=(7, 4), sticky="ns")
+
+        self.unit_button = self.button(
+            top, "°C / °F", self.toggle_unit, WHITE, TEAL
+        )
+        self.unit_button.grid(row=0, column=2, padx=(4, 0), sticky="ns")
+
+        self.status = self.label(
+            self.content,
+            "Connecting to weather service...",
+            8,
+            MUTED,
+            False,
+            CREAM
+        )
+        self.status.grid(row=1, column=0, sticky="w", pady=(0, 7))
+
+    # =====================================================
+    # CURRENT WEATHER AND GRAPH
+    # =====================================================
+
+    def build_current_weather(self):
+        row = tk.Frame(self.content, bg=CREAM)
+        row.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        row.grid_columnconfigure(0, weight=5, uniform="current")
+        row.grid_columnconfigure(1, weight=4, uniform="current")
+        row.grid_rowconfigure(0, weight=1)
+
+        self.current_card = self.card(row, 14)
+        self.current_card.grid(
+            row=0, column=0, sticky="nsew", padx=(0, 6)
         )
 
-        ttk.Label(
-            daily_card,
-            text="5-Day Forecast",
-            style="CardTitle.TLabel"
-        ).pack(
-            pady=12
+        self.label(
+            self.current_card, "Current conditions", 12, TEXT, True
+        ).pack(anchor="w")
+
+        self.location_label = self.label(
+            self.current_card, "Search for a city", 9, MUTED
+        )
+        self.location_label.pack(anchor="w", pady=(3, 0))
+
+        hero = tk.Frame(self.current_card, bg=WHITE)
+        hero.pack(fill="x", pady=(10, 8))
+
+        self.weather_icon = self.label(
+            hero, "☀", 43, ORANGE, True
+        )
+        self.weather_icon.pack(side="left", padx=(0, 10))
+
+        temp_frame = tk.Frame(hero, bg=WHITE)
+        temp_frame.pack(side="left", fill="x", expand=True)
+
+        self.temperature = self.label(
+            temp_frame, "--°", 30, TEXT, True
+        )
+        self.temperature.pack(anchor="w")
+
+        self.condition = self.label(
+            temp_frame, "Waiting for weather", 10, MUTED
+        )
+        self.condition.pack(anchor="w")
+
+        self.feels = self.label(
+            temp_frame, "Feels like --", 8, MUTED
+        )
+        self.feels.pack(anchor="w", pady=(4, 0))
+
+        self.metric_row = tk.Frame(self.current_card, bg=WHITE)
+        self.metric_row.pack(fill="x", pady=(7, 0))
+
+        self.metric_labels = {}
+        metrics = [
+            ("Humidity", "humidity"),
+            ("Wind", "wind"),
+            ("Pressure", "pressure"),
+            ("Feels like", "feels"),
+        ]
+
+        for index, (title, key) in enumerate(metrics):
+            self.metric_row.grid_columnconfigure(index, weight=1)
+
+            cell = tk.Frame(
+                self.metric_row, bg="#EAF4F5", padx=6, pady=9
+            )
+            cell.grid(
+                row=0, column=index, sticky="nsew",
+                padx=(0, 4) if index < 3 else (0, 0)
+            )
+
+            self.label(
+                cell, title, 8, MUTED, False, "#EAF4F5"
+            ).pack(anchor="center")
+
+            value = self.label(
+                cell, "--", 10, TEAL, True, "#EAF4F5"
+            )
+            value.pack(anchor="center", pady=(5, 0))
+            self.metric_labels[key] = value
+
+        # Temperature chart
+        self.chart_card = self.card(row, 12)
+        self.chart_card.grid(
+            row=0, column=1, sticky="nsew", padx=(6, 0)
         )
 
-        self.daily_frame = tk.Frame(
-            daily_card,
-            bg="white"
+        chart_head = tk.Frame(self.chart_card, bg=WHITE)
+        chart_head.pack(fill="x")
+
+        self.label(
+            chart_head, "Temperature trend", 11, TEXT, True
+        ).pack(side="left")
+
+        self.label(
+            chart_head, "5 DAYS", 8, MUTED
+        ).pack(side="right")
+
+        self.chart = tk.Canvas(
+            self.chart_card,
+            height=185,
+            bg=WHITE,
+            highlightthickness=0
+        )
+        self.chart.pack(fill="both", expand=True, pady=(8, 0))
+        self.chart.bind("<Configure>", self.draw_chart)
+
+    # =====================================================
+    # BOTTOM PANELS
+    # =====================================================
+
+    def build_bottom_panels(self):
+        bottom = tk.Frame(self.content, bg=CREAM)
+        bottom.grid(row=3, column=0, sticky="nsew")
+        bottom.grid_columnconfigure(0, weight=1, uniform="bottom")
+        bottom.grid_columnconfigure(1, weight=1, uniform="bottom")
+
+        # Hourly forecast
+        hourly_card = self.card(bottom, 10)
+        hourly_card.grid(
+            row=0, column=0, sticky="nsew", padx=(0, 6)
         )
 
-        self.daily_frame.pack(
-            fill="both",
-            expand=True,
-            padx=10,
-            pady=5
+        self.label(
+            hourly_card, "Hourly forecast", 11, TEXT, True
+        ).pack(anchor="w")
+
+        self.hourly_frame = tk.Frame(hourly_card, bg=WHITE)
+        self.hourly_frame.pack(fill="x", pady=(8, 0))
+
+        # Weekly forecast and precipitation
+        right = tk.Frame(bottom, bg=CREAM)
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right.grid_columnconfigure(0, weight=1)
+
+        weekly_card = self.card(right, 10)
+        weekly_card.pack(fill="both", expand=True)
+
+        self.label(
+            weekly_card, "Weekly forecast", 11, TEXT, True
+        ).pack(anchor="w")
+
+        self.weekly_frame = tk.Frame(weekly_card, bg=WHITE)
+        self.weekly_frame.pack(fill="x", pady=(7, 0))
+
+        precip_card = self.card(right, 10)
+        precip_card.pack(fill="both", expand=True, pady=(8, 0))
+
+        self.label(
+            precip_card, "Weather details", 11, TEXT, True
+        ).pack(anchor="w")
+
+        self.precipitation_label = self.label(
+            precip_card,
+            "Rainfall: --\nCloud cover: --\nSunrise: --\nSunset: --",
+            9,
+            MUTED
         )
+        self.precipitation_label.pack(anchor="w", pady=(8, 0))
 
-    # -----------------------------------------------------
-    # STATUS MESSAGE
-    # -----------------------------------------------------
+    # =====================================================
+    # API REQUESTS
+    # =====================================================
 
-    def set_status(self, message, error=False):
+    def load_default_city(self):
+        if API_KEY:
+            self.search_weather()
+        else:
+            self.status.config(
+                text="Add OPENWEATHER_API_KEY to your .env file.",
+                fg="#B94A55"
+            )
 
-        self.status_label.config(
-            text=message,
-            fg="#b42318" if error else "#36506b"
-        )
-
-    # -----------------------------------------------------
-    # GET WEATHER BUTTON
-    # -----------------------------------------------------
-
-    def get_weather(self):
-
-        city = self.city_entry.get().strip()
-
-        # Validate empty input
+    def search_weather(self):
+        city = self.search_entry.get().strip()
 
         if not city:
-
-            self.set_status(
-                "Please enter a city name or ZIP code.",
-                error=True
-            )
-
+            self.status.config(text="Please enter a city name.", fg="#B94A55")
             return
-
-        # Validate API key
 
         if not API_KEY:
-
-            self.set_status(
-                "API key not found. Check your .env file.",
-                error=True
+            messagebox.showwarning(
+                "API Key Required",
+                "Create a .env file in this folder with:\n\n"
+                "OPENWEATHER_API_KEY=your_actual_api_key"
             )
-
             return
 
-        self.get_button.config(
-            state="disabled"
-        )
+        if self.busy:
+            return
 
-        self.set_status(
-            "Fetching weather data..."
-        )
+        self.busy = True
+        self.request_number += 1
+        request_id = self.request_number
 
-        # Run API request in background
+        self.status.config(text=f"Loading weather for {city}...", fg=MUTED)
 
-        thread = threading.Thread(
-            target=self.fetch_weather,
-            args=(city,),
+        threading.Thread(
+            target=self.fetch_data,
+            args=(city, request_id, self.unit),
             daemon=True
-        )
+        ).start()
 
-        thread.start()
-
-    # -----------------------------------------------------
-    # API REQUEST
-    # -----------------------------------------------------
-
-    def fetch_weather(self, city):
-
+    def fetch_data(self, city, request_id, unit):
         try:
-
             params = {
                 "q": city,
                 "appid": API_KEY,
-                "units": self.unit
+                "units": unit
             }
 
-            # Current weather
-
             current_response = requests.get(
-                CURRENT_URL,
-                params=params,
-                timeout=10
+                CURRENT_URL, params=params, timeout=12
             )
 
-            # Forecast
+            if not current_response.ok:
+                raise RuntimeError(self.api_error(current_response))
 
             forecast_response = requests.get(
-                FORECAST_URL,
-                params=params,
-                timeout=10
+                FORECAST_URL, params=params, timeout=12
             )
 
-            # -----------------------------
-            # API KEY ERROR
-            # -----------------------------
+            if not forecast_response.ok:
+                raise RuntimeError(self.api_error(forecast_response))
 
-            if current_response.status_code == 401:
-
-                raise Exception(
-                    "Invalid API key. Please check your OpenWeather API key."
-                )
-
-            # -----------------------------
-            # CITY NOT FOUND
-            # -----------------------------
-
-            if current_response.status_code == 404:
-
-                raise Exception(
-                    "City not found. Please check the city name."
-                )
-
-            # -----------------------------
-            # OTHER CURRENT WEATHER ERROR
-            # -----------------------------
-
-            if current_response.status_code != 200:
-
-                raise Exception(
-                    f"Weather service returned error "
-                    f"{current_response.status_code}."
-                )
-
-            # -----------------------------
-            # FORECAST ERROR
-            # -----------------------------
-
-            if forecast_response.status_code != 200:
-
-                raise Exception(
-                    f"Forecast service returned error "
-                    f"{forecast_response.status_code}."
-                )
-
-            # Parse JSON
-
-            current_data = current_response.json()
-            forecast_data = forecast_response.json()
-
-            # Send result back to Tkinter main thread
+            current = current_response.json()
+            forecast = forecast_response.json()
 
             self.root.after(
                 0,
-                lambda data=current_data, forecast=forecast_data:
-                self.display_weather(data, forecast)
+                lambda: self.show_weather(
+                    request_id, city, current, forecast, unit
+                )
             )
-
-        # -------------------------------------------------
-        # TIMEOUT
-        # -------------------------------------------------
 
         except requests.exceptions.Timeout:
-
-            self.root.after(
-                0,
-                lambda:
-                self.show_error(
-                    "Network timeout. Please check your internet connection."
-                )
+            self.show_error_later(
+                request_id, "Request timed out. Please try again."
             )
-
-        # -------------------------------------------------
-        # CONNECTION ERROR
-        # -------------------------------------------------
-
-        except requests.exceptions.ConnectionError:
-
-            self.root.after(
-                0,
-                lambda:
-                self.show_error(
-                    "Network connection error. Please check your internet connection."
-                )
-            )
-
-        # -------------------------------------------------
-        # REQUEST ERROR
-        # -------------------------------------------------
-
         except requests.exceptions.RequestException:
-
-            self.root.after(
-                0,
-                lambda:
-                self.show_error(
-                    "Could not connect to the weather service."
-                )
+            self.show_error_later(
+                request_id, "Network error. Check your internet connection."
+            )
+        except RuntimeError as error:
+            self.show_error_later(request_id, str(error))
+        except (ValueError, KeyError, TypeError):
+            self.show_error_later(
+                request_id, "The weather service returned unexpected data."
             )
 
-        # -------------------------------------------------
-        # OTHER ERROR
-        # -------------------------------------------------
+    def api_error(self, response):
+        try:
+            message = response.json().get("message", "")
+        except ValueError:
+            message = ""
 
-        except Exception as error:
+        if response.status_code == 401:
+            return "API key is invalid or not active yet."
+        if response.status_code == 404:
+            return "City not found. Try a city name such as Shimla or London."
+        if response.status_code == 429:
+            return "API request limit reached. Try again later."
 
-            # IMPORTANT:
-            # Capture error BEFORE lambda.
-            # This prevents the Tkinter closure error.
+        return message or f"Weather API error: {response.status_code}"
 
-            error_message = str(error)
-
+    def show_error_later(self, request_id, message):
+        try:
             self.root.after(
-                0,
-                lambda message=error_message:
-                self.show_error(message)
+                0, lambda: self.show_error(request_id, message)
             )
+        except tk.TclError:
+            pass
 
-    # -----------------------------------------------------
-    # DISPLAY WEATHER
-    # -----------------------------------------------------
+    def show_error(self, request_id, message):
+        if request_id != self.request_number:
+            return
 
-    def display_weather(
-        self,
-        current,
-        forecast
-    ):
+        self.busy = False
+        self.status.config(text=message, fg="#B94A55")
+
+    # =====================================================
+    # DISPLAY API DATA
+    # =====================================================
+
+    def show_weather(self, request_id, city, current, forecast, unit):
+        if request_id != self.request_number:
+            return
+
+        if unit != self.unit:
+            self.busy = False
+            return
 
         try:
+            self.current_data = current
+            self.forecast_data = forecast
+            self.city = city
 
-            city_name = current.get(
-                "name",
-                "Unknown"
-            )
+            main = current["main"]
+            weather = current["weather"][0]
+            wind = current.get("wind", {})
+            sys_data = current.get("sys", {})
 
-            country = current.get(
-                "sys",
-                {}
-            ).get(
-                "country",
-                ""
-            )
-
-            self.last_city = city_name
+            city_name = current.get("name", city)
+            country = sys_data.get("country", "")
+            description = weather.get("description", "Unknown").title()
+            condition = weather.get("main", description)
 
             self.location_label.config(
-                text=f"{city_name}, {country}"
+                text=f"{city_name}, {country}  •  "
+                     f"{datetime.now().strftime('%a, %d %b %I:%M %p')}"
+            )
+            self.weather_icon.config(text=icon_for(condition))
+            self.temperature.config(
+                text=temp_text(float(main["temp"]), unit)
+            )
+            self.condition.config(text=description)
+            self.feels.config(
+                text=f"Feels like {temp_text(float(main['feels_like']), unit)}"
             )
 
-            # -----------------------------
-            # WEATHER VALUES
-            # -----------------------------
-
-            temperature = current["main"]["temp"]
-
-            feels_like = current["main"]["feels_like"]
-
-            humidity = current["main"]["humidity"]
-
-            pressure = current["main"]["pressure"]
-
-            wind_speed = current["wind"]["speed"]
-
-            description = current["weather"][0]["description"].title()
-
-            icon_code = current["weather"][0]["icon"]
-
-            # -----------------------------
-            # UNIT
-            # -----------------------------
-
-            if self.unit == "metric":
-
-                unit_symbol = "°C"
-                wind_unit = "m/s"
-
-            else:
-
-                unit_symbol = "°F"
-                wind_unit = "mph"
-
-            # -----------------------------
-            # UPDATE GUI
-            # -----------------------------
-
-            self.temperature_label.config(
-                text=f"{temperature:.1f}{unit_symbol}"
+            self.metric_labels["humidity"].config(
+                text=f"{main.get('humidity', '--')}%"
             )
 
-            self.condition_label.config(
-                text=f"Condition: {description}"
+            wind_speed = float(wind.get("speed", 0))
+            wind_unit = "m/s" if unit == "metric" else "mph"
+            self.metric_labels["wind"].config(
+                text=f"{wind_speed:.1f} {wind_unit}"
             )
 
-            self.feels_label.config(
-                text=f"Feels like: {feels_like:.1f}{unit_symbol}"
+            self.metric_labels["pressure"].config(
+                text=f"{main.get('pressure', '--')} hPa"
             )
 
-            self.humidity_label.config(
-                text=f"Humidity: {humidity}%"
+            self.metric_labels["feels"].config(
+                text=temp_text(float(main["feels_like"]), unit)
             )
 
-            self.wind_label.config(
-                text=f"Wind: {wind_speed:.1f} {wind_unit}"
+            self.display_hourly(forecast, unit)
+            self.display_weekly(forecast, unit)
+            self.display_details(current, forecast)
+
+            self.status.config(
+                text=f"Weather updated for {city_name}.",
+                fg=TEAL
             )
+            self.chart.after(50, self.draw_chart)
 
-            self.pressure_label.config(
-                text=f"Pressure: {pressure} hPa"
+        except (KeyError, IndexError, ValueError, TypeError):
+            self.status.config(
+                text="Weather data is incomplete. Try another city.",
+                fg="#B94A55"
             )
-
-            # -----------------------------
-            # WEATHER ICON
-            # -----------------------------
-
-            self.load_icon(
-                icon_code,
-                self.icon_label
-            )
-
-            # -----------------------------
-            # FORECASTS
-            # -----------------------------
-
-            self.display_hourly(
-                forecast
-            )
-
-            self.display_daily(
-                forecast
-            )
-
-            self.set_status(
-                f"Weather updated for {city_name}."
-            )
-
-        except Exception as error:
-
-            self.show_error(
-                f"Could not display weather data: {error}"
-            )
-
         finally:
+            self.busy = False
 
-            self.get_button.config(
-                state="normal"
-            )
-
-    # -----------------------------------------------------
-    # LOAD WEATHER ICON
-    # -----------------------------------------------------
-
-    def load_icon(
-        self,
-        icon_code,
-        target_label
-    ):
-
-        try:
-
-            response = requests.get(
-                ICON_URL.format(icon_code),
-                timeout=5
-            )
-
-            response.raise_for_status()
-
-            image = Image.open(
-                BytesIO(response.content)
-            ).convert("RGBA")
-
-            image = image.resize(
-                (90, 90),
-                Image.Resampling.LANCZOS
-            )
-
-            photo = ImageTk.PhotoImage(
-                image
-            )
-
-            target_label.config(
-                image=photo,
-                text=""
-            )
-
-            # Keep reference alive
-
-            self.icon_references.append(
-                photo
-            )
-
-        except Exception:
-
-            target_label.config(
-                image="",
-                text="☁",
-                font=("Segoe UI", 40)
-            )
-
-    # -----------------------------------------------------
+    # =====================================================
     # HOURLY FORECAST
-    # -----------------------------------------------------
+    # =====================================================
 
-    def display_hourly(
-        self,
-        forecast
-    ):
-
-        # Clear old widgets
-
+    def display_hourly(self, forecast, unit):
         for widget in self.hourly_frame.winfo_children():
-
             widget.destroy()
 
-        # Get first 2 forecast entries
-        # OpenWeather free forecast provides
-        # 3-hour intervals.
+        entries = forecast.get("list", [])[:6]
 
-        entries = forecast.get(
-            "list",
-            []
-        )[:2]
+        if not entries:
+            self.label(
+                self.hourly_frame, "No forecast data available.",
+                9, MUTED
+            ).pack(anchor="w")
+            return
 
-        for entry in entries:
+        for index, item in enumerate(entries):
+            self.hourly_frame.grid_columnconfigure(index, weight=1)
 
-            self.create_forecast_card(
+            timestamp = datetime.fromtimestamp(item["dt"])
+            weather = item["weather"][0]
+            temp = float(item["main"]["temp"])
+
+            cell = tk.Frame(
                 self.hourly_frame,
-                entry,
-                hourly=True
+                bg="#F4F7FA",
+                padx=4,
+                pady=8
+            )
+            cell.grid(
+                row=0, column=index, sticky="nsew",
+                padx=(0, 3) if index < len(entries) - 1 else (0, 0)
             )
 
-    # -----------------------------------------------------
-    # DAILY FORECAST
-    # -----------------------------------------------------
+            self.label(
+                cell, timestamp.strftime("%H:%M"), 8,
+                MUTED, False, "#F4F7FA", "center"
+            ).pack(anchor="center")
 
-    def display_daily(
-        self,
-        forecast
-    ):
+            self.label(
+                cell, icon_for(weather.get("main", "")), 15,
+                TEAL, True, "#F4F7FA", "center"
+            ).pack(anchor="center", pady=4)
 
-        # Clear old widgets
+            self.label(
+                cell, temp_text(temp, unit), 9,
+                TEXT, True, "#F4F7FA", "center"
+            ).pack(anchor="center")
 
-        for widget in self.daily_frame.winfo_children():
+    # =====================================================
+    # WEEKLY FORECAST
+    # =====================================================
 
+    def display_weekly(self, forecast, unit):
+        for widget in self.weekly_frame.winfo_children():
             widget.destroy()
 
-        daily_data = {}
+        grouped = defaultdict(list)
 
-        # Group forecast entries by date
+        for item in forecast.get("list", []):
+            date = item.get("dt_txt", "")[:10]
+            if date:
+                grouped[date].append(item)
 
-        for entry in forecast.get(
-            "list",
-            []
-        ):
+        dates = sorted(grouped.keys())[:5]
 
-            date_text = entry[
-                "dt_txt"
-            ].split(" ")[0]
+        if not dates:
+            self.label(
+                self.weekly_frame, "No weekly forecast available.",
+                9, MUTED
+            ).pack(anchor="w")
+            return
 
-            if date_text not in daily_data:
+        for index, date in enumerate(dates):
+            entries = grouped[date]
 
-                daily_data[date_text] = []
-
-            daily_data[
-                date_text
-            ].append(entry)
-
-        # Take next 5 days
-
-        dates = list(
-            daily_data.keys()
-        )[:5]
-
-        for date_text in dates:
-
-            entries = daily_data[
-                date_text
-            ]
-
-            # Choose forecast closest to noon
-
-            selected = min(
+            midday = min(
                 entries,
-                key=lambda item:
-                abs(
-                    int(
-                        item["dt_txt"][11:13]
-                    ) - 12
+                key=lambda item: abs(
+                    int(item["dt_txt"][11:13]) - 12
                 )
             )
 
-            self.create_forecast_card(
-                self.daily_frame,
-                selected,
-                hourly=False
+            temps = [float(item["main"]["temp"]) for item in entries]
+            weather = midday["weather"][0]
+            condition = weather.get("main", "")
+
+            try:
+                date_label = datetime.strptime(
+                    date, "%Y-%m-%d"
+                ).strftime("%a, %d %b")
+            except ValueError:
+                date_label = date
+
+            row = tk.Frame(
+                self.weekly_frame,
+                bg="#F4F7FA",
+                padx=8,
+                pady=6
+            )
+            row.pack(fill="x", pady=(0, 3))
+
+            self.label(
+                row, date_label, 8, TEXT, True, "#F4F7FA"
+            ).pack(side="left")
+
+            self.label(
+                row, icon_for(condition), 13, TEXT,
+                True, "#F4F7FA"
+            ).pack(side="left", padx=10)
+
+            self.label(
+                row,
+                f"{round(max(temps))}° / {round(min(temps))}°",
+                9, TEAL, True, "#F4F7FA"
+            ).pack(side="right")
+
+    # =====================================================
+    # ADDITIONAL DETAILS
+    # =====================================================
+
+    def display_details(self, current, forecast):
+        rain = current.get("rain", {}).get("1h")
+        clouds = current.get("clouds", {}).get("all", "--")
+        sys_data = current.get("sys", {})
+
+        sunrise = sys_data.get("sunrise")
+        sunset = sys_data.get("sunset")
+
+        def format_time(timestamp):
+            if not timestamp:
+                return "--"
+            return datetime.fromtimestamp(timestamp).strftime("%I:%M %p")
+
+        rain_text = f"{rain} mm in last hour" if rain is not None else "No recent rain reported"
+
+        self.precipitation_label.config(
+            text=(
+                f"Rainfall: {rain_text}\n"
+                f"Cloud cover: {clouds}%\n"
+                f"Sunrise: {format_time(sunrise)}\n"
+                f"Sunset: {format_time(sunset)}"
+            )
+        )
+
+    # =====================================================
+    # TEMPERATURE CHART
+    # =====================================================
+
+    def draw_chart(self, _event=None):
+        canvas = self.chart
+        canvas.delete("all")
+
+        width = max(canvas.winfo_width(), 200)
+        height = max(canvas.winfo_height(), 130)
+
+        left, right = 32, width - 12
+        top, bottom = 15, height - 25
+
+        # Empty-state chart
+        if not self.forecast_data:
+            for i in range(4):
+                y = top + i * (bottom - top) / 3
+                canvas.create_line(
+                    left, y, right, y,
+                    fill="#E8EEF0"
+                )
+
+            canvas.create_text(
+                width / 2,
+                height / 2,
+                text="Search a city to load temperature trend",
+                fill=MUTED,
+                font=("Segoe UI", 9)
+            )
+            return
+
+        entries = self.forecast_data.get("list", [])[:10]
+        if len(entries) < 2:
+            return
+
+        values = [float(item["main"]["temp"]) for item in entries]
+        minimum = min(values) - 2
+        maximum = max(values) + 2
+
+        if maximum == minimum:
+            maximum += 1
+
+        # Grid lines
+        for i in range(4):
+            y = top + i * (bottom - top) / 3
+            canvas.create_line(
+                left, y, right, y,
+                fill="#E7ECEF"
             )
 
-    # -----------------------------------------------------
-    # FORECAST CARD
-    # -----------------------------------------------------
+        points = []
+        x_step = (right - left) / (len(values) - 1)
 
-    def create_forecast_card(
-        self,
-        parent,
-        entry,
-        hourly=False
-    ):
+        for i, value in enumerate(values):
+            x = left + i * x_step
+            y = bottom - (
+                (value - minimum) / (maximum - minimum)
+            ) * (bottom - top)
 
-        card = tk.Frame(
-            parent,
-            bg="#f8fbff",
-            highlightthickness=1,
-            highlightbackground="#dce8f5"
+            points.extend([x, y])
+
+        # Filled area
+        polygon = [left, bottom] + points + [right, bottom]
+        canvas.create_polygon(
+            polygon,
+            fill="#DDF0F0",
+            outline=""
         )
 
-        card.pack(
-            fill="x",
-            pady=4
+        # Temperature curve
+        canvas.create_line(
+            *points,
+            fill="#55A9B9",
+            width=3,
+            smooth=True
         )
 
-        # Date/time
+        # Points and time labels
+        for i, item in enumerate(entries):
+            x = left + i * x_step
+            y = points[i * 2 + 1]
 
-        date_time = datetime.strptime(
-            entry["dt_txt"],
-            "%Y-%m-%d %H:%M:%S"
-        )
-
-        if hourly:
-
-            title = date_time.strftime(
-                "%I:%M %p"
+            canvas.create_oval(
+                x - 3, y - 3, x + 3, y + 3,
+                fill=TEAL,
+                outline=WHITE
             )
 
-        else:
+            if i % 2 == 0:
+                time_text = item.get("dt_txt", "")[11:16]
+                canvas.create_text(
+                    x, bottom + 13,
+                    text=time_text,
+                    fill=MUTED,
+                    font=("Segoe UI", 7)
+                )
 
-            title = date_time.strftime(
-                "%a, %d %b"
-            )
-
-        # Weather details
-
-        description = entry[
-            "weather"
-        ][0][
-            "description"
-        ].title()
-
-        icon_code = entry[
-            "weather"
-        ][0][
-            "icon"
-        ]
-
-        temperature = entry[
-            "main"
-        ][
-            "temp"
-        ]
-
-        if self.unit == "metric":
-
-            unit_symbol = "°C"
-
-        else:
-
-            unit_symbol = "°F"
-
-        # Text frame
-
-        text_frame = tk.Frame(
-            card,
-            bg="#f8fbff"
+        canvas.create_text(
+            5, top,
+            text=f"{round(maximum)}°",
+            anchor="w",
+            fill=MUTED,
+            font=("Segoe UI", 7)
         )
 
-        text_frame.pack(
-            side="left",
-            fill="x",
-            expand=True,
-            padx=10,
-            pady=6
+        canvas.create_text(
+            5, bottom,
+            text=f"{round(minimum)}°",
+            anchor="w",
+            fill=MUTED,
+            font=("Segoe UI", 7)
         )
 
-        tk.Label(
-            text_frame,
-            text=title,
-            bg="#f8fbff",
-            fg="#1e3a5f",
-            font=("Segoe UI", 10, "bold")
-        ).pack(
-            anchor="w"
-        )
-
-        tk.Label(
-            text_frame,
-            text=description,
-            bg="#f8fbff",
-            fg="#607d98",
-            font=("Segoe UI", 9)
-        ).pack(
-            anchor="w"
-        )
-
-        tk.Label(
-            text_frame,
-            text=f"{temperature:.1f}{unit_symbol}",
-            bg="#f8fbff",
-            fg="#172b4d",
-            font=("Segoe UI", 13, "bold")
-        ).pack(
-            anchor="w"
-        )
-
-        # Icon
-
-        icon_label = tk.Label(
-            card,
-            bg="#f8fbff"
-        )
-
-        icon_label.pack(
-            side="right",
-            padx=10
-        )
-
-        self.load_icon(
-            icon_code,
-            icon_label
-        )
-
-    # -----------------------------------------------------
-    # °C / °F TOGGLE
-    # -----------------------------------------------------
+    # =====================================================
+    # UNIT SWITCHING
+    # =====================================================
 
     def toggle_unit(self):
+        self.unit = "imperial" if self.unit == "metric" else "metric"
 
-        if self.unit == "metric":
+        self.unit_button.config(
+            text="°F" if self.unit == "metric" else "°C"
+        )
 
-            self.unit = "imperial"
-
-            self.unit_button.config(
-                text="Switch to °C"
-            )
-
+        if self.current_data:
+            city = self.search_entry.get().strip()
+            self.search_weather()
         else:
-
-            self.unit = "metric"
-
-            self.unit_button.config(
-                text="Switch to °F"
+            self.status.config(
+                text="Unit changed. Search a city to refresh weather."
             )
 
-        # Refresh current city
 
-        if self.last_city:
-
-            self.get_weather()
-
-    # -----------------------------------------------------
-    # ERROR DISPLAY
-    # -----------------------------------------------------
-
-    def show_error(
-        self,
-        message
-    ):
-
-        self.set_status(
-            message,
-            error=True
-        )
-
-        self.get_button.config(
-            state="normal"
-        )
-
-
-# ---------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------
+# =========================================================
+# ENTRY POINT
+# =========================================================
 
 def main():
-
     root = tk.Tk()
-
-    WeatherApp(root)
-
+    ClimaDashboard(root)
     root.mainloop()
 
 
 if __name__ == "__main__":
-
     main()
