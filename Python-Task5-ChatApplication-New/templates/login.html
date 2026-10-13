@@ -1,0 +1,82 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Violet Chat | Login</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="auth-page">
+    <main class="auth-shell">
+        <section class="auth-art">
+            <a class="brand" href="{{ url_for('login') }}">
+                <span class="brand-icon">✦</span> violet<span>chat</span>
+            </a>
+
+            <div class="art-content">
+                <span class="eyebrow">YOUR SPACE. YOUR PEOPLE.</span>
+                <h1>Good conversations<br>start <span>here.</span></h1>
+                <p>A little corner of the internet to connect, share, and stay close.</p>
+
+                <div class="floating-chat">
+                    <div class="avatar avatar-one">A</div>
+                    <div>
+                        <strong>Alex Morgan</strong>
+                        <p>That sounds like a plan! ✨</p>
+                    </div>
+                    <span class="online-dot"></span>
+                </div>
+
+                <div class="art-orb orb-one"></div>
+                <div class="art-orb orb-two"></div>
+            </div>
+
+            <p class="art-footer">A calmer place to connect.</p>
+        </section>
+
+        <section class="auth-form-side">
+            <div class="auth-form">
+                <div class="mobile-brand brand">
+                    <span class="brand-icon">✦</span> violet<span>chat</span>
+                </div>
+
+                <span class="eyebrow">WELCOME BACK</span>
+                <h2>Sign in to your space</h2>
+                <p class="form-subtitle">Pick up right where your conversations left off.</p>
+
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+
+                <form method="POST" action="{{ url_for('login') }}">
+                    <label for="username">Username</label>
+                    <input id="username" name="username" type="text"
+                           placeholder="Enter your username" minlength="3"
+                           maxlength="24" autocomplete="username" required>
+
+                    <div class="label-row">
+                        <label for="password">Password</label>
+                    </div>
+                    <input id="password" name="password" type="password"
+                           placeholder="Enter your password"
+                           autocomplete="current-password" required>
+
+                    <button class="primary-button" type="submit">
+                        Sign in <span>→</span>
+                    </button>
+                </form>
+
+                <p class="auth-switch">New around here?
+                    <a href="{{ url_for('register') }}">Create an account</a>
+                </p>
+
+                <div class="secure-note"><span>✦</span> Your conversations, your space.</div>
+            </div>
+        </section>
+    </main>
+</body>
+</html>

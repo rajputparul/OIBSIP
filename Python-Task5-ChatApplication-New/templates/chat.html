@@ -1,0 +1,108 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Violet Chat | Messages</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='js/chat.js') }}" defer></script>
+</head>
+<body class="chat-page">
+    <div class="chat-app">
+        <aside class="sidebar">
+            <a class="brand" href="{{ url_for('chat') }}">
+                <span class="brand-icon">✦</span> violet<span>chat</span>
+            </a>
+
+            <div class="profile-card">
+                <div class="avatar avatar-one">{{ username[0]|upper }}</div>
+                <div class="profile-info">
+                    <strong>{{ username }}</strong>
+                    <small><span class="online-dot"></span> Your space</small>
+                </div>
+                <span class="profile-menu">✦</span>
+            </div>
+
+            <div class="sidebar-label">YOUR WORKSPACE</div>
+            <div class="sidebar-link active"><span>▦</span> Messages <span class="link-count">●</span></div>
+            <div class="sidebar-label room-heading">CHAT ROOMS
+                <button id="create-room-btn" class="icon-button" title="Create room">+</button>
+            </div>
+
+            <div id="room-list" class="room-list">
+                {% for room in rooms %}
+                <button class="room-item" data-room="{{ room }}">
+                    <span class="room-hash">#</span>
+                    <span>{{ room }}</span>
+                </button>
+                {% endfor %}
+                {% if not rooms %}
+                <button class="room-item selected" data-room="General">
+                    <span class="room-hash">#</span><span>General</span>
+                </button>
+                {% endif %}
+            </div>
+
+            <div class="sidebar-bottom">
+                <div class="sidebar-label">YOUR ACCOUNT</div>
+                <form method="POST" action="{{ url_for('logout') }}">
+                    <button class="logout-button" type="submit"><span>↪</span> Sign out</button>
+                </form>
+                <div class="sidebar-version">VIOLET CHAT <span>•</span> LOCAL EDITION</div>
+            </div>
+        </aside>
+
+        <main class="conversation">
+            <header class="conversation-header">
+                <div class="conversation-title">
+                    <div class="room-icon">#</div>
+                    <div>
+                        <h1 id="current-room-title">General</h1>
+                        <p>Make yourself at home.</p>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <span class="connection-pill"><span class="online-dot"></span> Connected</span>
+                    <div class="header-avatar">{{ username[0]|upper }}</div>
+                </div>
+            </header>
+
+            <div class="welcome-banner">
+                <div class="welcome-sparkle">✦</div>
+                <div>
+                    <strong>A little space to connect.</strong>
+                    <p>Say hello, share an idea, or just hang out.</p>
+                </div>
+            </div>
+
+            <section id="messages" class="messages-area" aria-live="polite">
+                <div id="empty-state" class="empty-state">
+                    <div class="empty-icon">✧</div>
+                    <h2>It's quiet in here...</h2>
+                    <p>Start the conversation. Your message could make someone's day.</p>
+                </div>
+            </section>
+
+            <div id="typing-status" class="typing-status"></div>
+
+            <form id="message-form" class="composer">
+                <button type="button" id="emoji-btn" class="composer-tool" title="Add emoji">☺</button>
+                <input id="message-input" type="text" maxlength="2000"
+                       placeholder="Message #General..." autocomplete="off"
+                       aria-label="Write a message">
+                <button type="button" id="attach-btn" class="composer-tool" title="Attachments coming later" disabled>＋</button>
+                <button type="submit" class="send-button">Send <span>↗</span></button>
+            </form>
+            <div id="emoji-picker" class="emoji-picker hidden">
+                <button type="button">😊</button><button type="button">😂</button>
+                <button type="button">❤️</button><button type="button">✨</button>
+                <button type="button">👍</button><button type="button">🎉</button>
+                <button type="button">👋</button><button type="button">🥹</button>
+            </div>
+            <footer class="conversation-footer">Be kind. Be curious. Keep the conversation going. <span>✦</span></footer>
+        </main>
+    </div>
+    <div id="toast" class="toast" role="status"></div>
+</body>
+</html>

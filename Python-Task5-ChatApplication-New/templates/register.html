@@ -1,0 +1,76 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Violet Chat | Create Account</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="auth-page">
+    <main class="auth-shell">
+        <section class="auth-art">
+            <a class="brand" href="{{ url_for('login') }}">
+                <span class="brand-icon">✦</span> violet<span>chat</span>
+            </a>
+            <div class="art-content">
+                <span class="eyebrow">A NEW KIND OF CONNECTION</span>
+                <h1>Your people.<br>Your <span>conversations.</span></h1>
+                <p>Create your space and make room for better conversations.</p>
+                <div class="floating-chat">
+                    <div class="avatar avatar-two">M</div>
+                    <div>
+                        <strong>Mia Chen</strong>
+                        <p>So happy you're here! 💜</p>
+                    </div>
+                    <span class="online-dot"></span>
+                </div>
+                <div class="art-orb orb-one"></div>
+                <div class="art-orb orb-two"></div>
+            </div>
+            <p class="art-footer">A calmer place to connect.</p>
+        </section>
+
+        <section class="auth-form-side">
+            <div class="auth-form">
+                <div class="mobile-brand brand">
+                    <span class="brand-icon">✦</span> violet<span>chat</span>
+                </div>
+                <span class="eyebrow">GET STARTED</span>
+                <h2>Create your account</h2>
+                <p class="form-subtitle">It only takes a moment to join the conversation.</p>
+
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+
+                <form method="POST" action="{{ url_for('register') }}">
+                    <label for="username">Username</label>
+                    <input id="username" name="username" type="text"
+                           placeholder="Choose a username" minlength="3"
+                           maxlength="24" pattern="[A-Za-z0-9_]+"
+                           title="Use letters, numbers and underscores"
+                           autocomplete="username" required>
+
+                    <label for="password">Password</label>
+                    <input id="password" name="password" type="password"
+                           placeholder="At least 8 characters" minlength="8"
+                           autocomplete="new-password" required>
+
+                    <button class="primary-button" type="submit">
+                        Create account <span>→</span>
+                    </button>
+                </form>
+
+                <p class="auth-switch">Already have an account?
+                    <a href="{{ url_for('login') }}">Sign in</a>
+                </p>
+                <div class="secure-note"><span>✦</span> Your conversations, your space.</div>
+            </div>
+        </section>
+    </main>
+</body>
+</html>
